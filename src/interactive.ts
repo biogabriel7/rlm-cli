@@ -106,6 +106,7 @@ const W = Math.min(process.stdout.columns || 80, 100);
 
 let currentModelId = DEFAULT_MODEL;
 let currentModel: Model<Api> | undefined;
+let currentProviderName = "";
 let contextText = "";
 let contextSource = "";
 let queryCount = 0;
@@ -131,8 +132,8 @@ function resolveModel(modelId: string): Model<Api> | undefined {
 const PROVIDER_KEYS: Record<string, string> = {
 	anthropic: "ANTHROPIC_API_KEY",
 	openai: "OPENAI_API_KEY",
-	google: "GOOGLE_API_KEY",
-	"google-gemini-cli": "GOOGLE_API_KEY",
+	google: "GEMINI_API_KEY",
+	"google-gemini-cli": "GEMINI_API_KEY",
 	"google-vertex": "GOOGLE_VERTEX_API_KEY",
 	groq: "GROQ_API_KEY",
 	xai: "XAI_API_KEY",
@@ -146,7 +147,7 @@ const PROVIDER_KEYS: Record<string, string> = {
 const SETUP_PROVIDERS = [
 	{ name: "Anthropic", label: "Claude", env: "ANTHROPIC_API_KEY", piProvider: "anthropic" },
 	{ name: "OpenAI", label: "GPT", env: "OPENAI_API_KEY", piProvider: "openai" },
-	{ name: "Google", label: "Gemini", env: "GOOGLE_API_KEY", piProvider: "google" },
+	{ name: "Google", label: "Gemini", env: "GEMINI_API_KEY", piProvider: "google" },
 	{ name: "Groq", label: "Groq", env: "GROQ_API_KEY", piProvider: "groq" },
 	{ name: "xAI", label: "Grok", env: "XAI_API_KEY", piProvider: "xai" },
 	{ name: "Mistral", label: "Mistral", env: "MISTRAL_API_KEY", piProvider: "mistral" },
@@ -307,7 +308,7 @@ ${c.dim}         Recursive Language Models — arXiv:2512.24601${c.reset}
 // ── Status line ─────────────────────────────────────────────────────────────
 
 function printStatusLine(): void {
-	const provider = detectProvider();
+	const provider = currentProviderName || detectProvider();
 	const modelShort = currentModelId.length > 35
 		? currentModelId.slice(0, 32) + "..."
 		: currentModelId;
@@ -658,7 +659,11 @@ async function runQuery(query: string): Promise<void> {
 	const isDirectMode = !contextText;
 
 	if (!currentModel) {
-		currentModel = resolveModel(currentModelId);
+		const resolved = resolveModelWithProvider(currentModelId);
+		if (resolved) {
+			currentModel = resolved.model;
+			currentProviderName = resolved.provider;
+		}
 	}
 	if (!currentModel) {
 		console.log(`\n  ${c.red}Model "${currentModelId}" not found.${c.reset}`);
@@ -981,7 +986,11 @@ async function interactive(): Promise<void> {
 	}
 
 	// Resolve model
-	currentModel = resolveModel(currentModelId);
+	const initialResolved = resolveModelWithProvider(currentModelId);
+	if (initialResolved) {
+		currentModel = initialResolved.model;
+		currentProviderName = initialResolved.provider;
+	}
 	if (!currentModel) {
 		console.log(`\n  ${c.red}Model "${currentModelId}" not found.${c.reset}`);
 		console.log(`  Check ${c.bold}RLM_MODEL${c.reset} in your .env file.\n`);
@@ -1122,6 +1131,7 @@ async function interactive(): Promise<void> {
 
 						currentModelId = pick;
 						currentModel = resolved.model;
+						currentProviderName = resolved.provider;
 						console.log(`  ${c.green}✓${c.reset} Switched to ${c.bold}${currentModelId}${c.reset}`);
 						console.log();
 						printStatusLine();
@@ -1185,7 +1195,9 @@ async function interactive(): Promise<void> {
 					const defaultModel = getDefaultModelForProvider(chosen.piProvider);
 					if (defaultModel) {
 						currentModelId = defaultModel;
-						currentModel = resolveModel(currentModelId);
+						const provResolved = resolveModelWithProvider(currentModelId);
+						currentModel = provResolved?.model;
+						currentProviderName = chosen.piProvider;
 						console.log(`  ${c.green}✓${c.reset} Switched to ${c.bold}${chosen.name}${c.reset}`);
 						console.log(`  ${c.green}✓${c.reset} Default model: ${c.bold}${currentModelId}${c.reset}`);
 						console.log();
