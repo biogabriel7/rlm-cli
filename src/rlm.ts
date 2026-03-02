@@ -339,7 +339,7 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 			const errMsg = response.errorMessage as string;
 			if (errMsg.includes("authentication") || errMsg.includes("401")) {
 				return {
-					answer: `[API Authentication Error] ${errMsg}\n\nCheck your ANTHROPIC_API_KEY in .env.`,
+					answer: `[API Authentication Error] ${errMsg}\n\nCheck your API key in .env or run /provider to reconfigure.`,
 					iterations: iteration,
 					totalSubQueries,
 					completed: false,

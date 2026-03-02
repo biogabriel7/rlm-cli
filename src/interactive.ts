@@ -1206,6 +1206,7 @@ async function interactive(): Promise<void> {
 			}
 
 			// Auto-select default model for chosen provider
+			currentProviderName = provider.piProvider;
 			const defaultModel = getDefaultModelForProvider(provider.piProvider);
 			if (defaultModel) {
 				currentModelId = defaultModel;
@@ -1323,7 +1324,7 @@ async function interactive(): Promise<void> {
 					break;
 				case "model":
 				case "m": {
-					const curProvider = detectProvider();
+					const curProvider = currentProviderName || detectProvider();
 					if (arg) {
 						// Accept a number (from current provider list) or a model ID
 						const curModels = getModelsForProvider(curProvider);
@@ -1390,7 +1391,7 @@ async function interactive(): Promise<void> {
 				}
 				case "provider":
 				case "prov": {
-					const curProvider = detectProvider();
+					const curProvider = currentProviderName || detectProvider();
 					const curLabel = findSetupProvider(curProvider)?.name || curProvider;
 					console.log(`\n  ${c.bold}Current provider:${c.reset} ${c.cyan}${curLabel}${c.reset}\n`);
 
@@ -1429,7 +1430,7 @@ async function interactive(): Promise<void> {
 						currentModelId = defaultModel;
 						const provResolved = resolveModelWithProvider(currentModelId);
 						currentModel = provResolved?.model;
-						currentProviderName = chosen.piProvider;
+						currentProviderName = provResolved?.provider || chosen.piProvider;
 						console.log(`  ${c.green}✓${c.reset} Switched to ${c.bold}${chosen.name}${c.reset}`);
 						console.log(`  ${c.green}✓${c.reset} Default model: ${c.bold}${currentModelId}${c.reset}`);
 						console.log();
