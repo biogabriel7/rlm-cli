@@ -64,12 +64,14 @@ export function loadConfig(): RlmConfig {
 			try {
 				const raw = fs.readFileSync(configPath, "utf-8");
 				const parsed = parseYaml(raw);
+				const clamp = (v: unknown, min: number, max: number, def: number) =>
+					typeof v === "number" && isFinite(v) ? Math.max(min, Math.min(max, Math.round(v))) : def;
 				return {
-					max_iterations: typeof parsed.max_iterations === "number" ? parsed.max_iterations : DEFAULTS.max_iterations,
-					max_depth: typeof parsed.max_depth === "number" ? parsed.max_depth : DEFAULTS.max_depth,
-					max_sub_queries: typeof parsed.max_sub_queries === "number" ? parsed.max_sub_queries : DEFAULTS.max_sub_queries,
-					truncate_len: typeof parsed.truncate_len === "number" ? parsed.truncate_len : DEFAULTS.truncate_len,
-					metadata_preview_lines: typeof parsed.metadata_preview_lines === "number" ? parsed.metadata_preview_lines : DEFAULTS.metadata_preview_lines,
+					max_iterations: clamp(parsed.max_iterations, 1, 100, DEFAULTS.max_iterations),
+					max_depth: clamp(parsed.max_depth, 1, 10, DEFAULTS.max_depth),
+					max_sub_queries: clamp(parsed.max_sub_queries, 1, 500, DEFAULTS.max_sub_queries),
+					truncate_len: clamp(parsed.truncate_len, 500, 50000, DEFAULTS.truncate_len),
+					metadata_preview_lines: clamp(parsed.metadata_preview_lines, 5, 100, DEFAULTS.metadata_preview_lines),
 				};
 			} catch {
 				// Fall through to defaults

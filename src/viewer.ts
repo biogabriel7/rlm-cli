@@ -785,7 +785,13 @@ async function main(): Promise<void> {
 		console.error(`${c.red}File not found: ${filePath}${c.reset}`);
 		process.exit(1);
 	}
-	const traj: TrajectoryData = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+	let traj: TrajectoryData;
+	try {
+		traj = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+	} catch (err: any) {
+		console.error(`${c.red}Could not parse trajectory file: ${err.message}${c.reset}`);
+		process.exit(1);
+	}
 
 	if (!traj.iterations || traj.iterations.length === 0) {
 		console.error(`${c.red}Trajectory has no iterations (empty run).${c.reset}`);

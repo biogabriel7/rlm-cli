@@ -1524,13 +1524,17 @@ async function interactive(): Promise<void> {
 		if (!contextText) {
 			const { filePath, query: extractedQuery } = extractFilePath(query);
 			if (filePath) {
-				contextText = fs.readFileSync(filePath, "utf-8");
-				contextSource = path.basename(filePath);
-				const lines = contextText.split("\n").length;
-				console.log(
-					`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines} lines) from ${c.underline}${filePath}${c.reset}`
-				);
-				query = extractedQuery || query;
+				try {
+					contextText = fs.readFileSync(filePath, "utf-8");
+					contextSource = path.basename(filePath);
+					const lines = contextText.split("\n").length;
+					console.log(
+						`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines} lines) from ${c.underline}${filePath}${c.reset}`
+					);
+					query = extractedQuery || query;
+				} catch (err: any) {
+					console.log(`  ${c.red}Could not read file: ${err.message}${c.reset}`);
+				}
 			}
 		}
 
