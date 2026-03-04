@@ -1237,12 +1237,35 @@ async function interactive(): Promise<void> {
 		setupRl.close();
 	}
 
-	// Resolve model
+	// Resolve model — ensure the resolved provider actually has an API key
 	const initialResolved = resolveModelWithProvider(currentModelId);
 	if (initialResolved) {
-		currentModel = initialResolved.model;
-		currentProviderName = initialResolved.provider;
+		const resolvedKey = providerEnvKey(initialResolved.provider);
+		if (process.env[resolvedKey]) {
+			// Provider has a key — use it
+			currentModel = initialResolved.model;
+			currentProviderName = initialResolved.provider;
+		}
 	}
+
+	// If default model's provider has no key, fall back to a provider that does
+	if (!currentModel) {
+		const activeProvider = detectProvider();
+		if (activeProvider !== "unknown") {
+			const fallbackModel = getDefaultModelForProvider(activeProvider);
+			if (fallbackModel) {
+				const fallbackResolved = resolveModelWithProvider(fallbackModel);
+				if (fallbackResolved) {
+					currentModelId = fallbackModel;
+					currentModel = fallbackResolved.model;
+					currentProviderName = fallbackResolved.provider;
+					const label = findSetupProvider(activeProvider)?.name || activeProvider;
+					console.log(`  ${c.dim}Using ${label} (${currentModelId})${c.reset}`);
+				}
+			}
+		}
+	}
+
 	if (!currentModel) {
 		console.log(`\n  ${c.red}Model "${currentModelId}" not found.${c.reset}`);
 		console.log(`  Check ${c.bold}RLM_MODEL${c.reset} in your .env file.\n`);

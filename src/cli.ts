@@ -88,7 +88,7 @@ function parseArgs(): CliArgs {
 	}
 
 	if (!modelId) {
-		modelId = process.env.RLM_MODEL || "claude-sonnet-4-5-20250929";
+		modelId = process.env.RLM_MODEL || "claude-sonnet-4-6";
 	}
 
 	if (positional.length === 0) {
