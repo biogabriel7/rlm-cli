@@ -170,17 +170,27 @@ function hasAnyApiKey(): boolean {
 }
 
 /** Returns the pi-ai provider name + model for a given model ID, searching all providers.
- *  Prioritises SETUP_PROVIDERS so e.g. "gpt-4o" resolves to "openai" not "azure-openai-responses". */
+ *  Prioritises SETUP_PROVIDERS (with API key) so e.g. "gpt-4o" resolves to "openai" not "azure-openai-responses". */
 function resolveModelWithProvider(modelId: string): { model: Model<Api>; provider: string } | undefined {
-	// First pass: check well-known (setup) providers
 	const knownNames = new Set(SETUP_PROVIDERS.map((p) => p.piProvider));
+	let firstMatch: { model: Model<Api>; provider: string } | undefined;
+
+	// First pass: well-known providers that have an API key set (best match)
 	for (const provider of getProviders()) {
 		if (!knownNames.has(provider)) continue;
 		for (const m of getModels(provider)) {
-			if (m.id === modelId) return { model: m, provider };
+			if (m.id === modelId) {
+				if (process.env[providerEnvKey(provider)]) {
+					return { model: m, provider };
+				}
+				if (!firstMatch) firstMatch = { model: m, provider };
+			}
 		}
 	}
-	// Second pass: all remaining providers
+	// Second pass: well-known providers without key (user may enter it later)
+	if (firstMatch) return firstMatch;
+
+	// Third pass: all remaining providers
 	for (const provider of getProviders()) {
 		if (knownNames.has(provider)) continue;
 		for (const m of getModels(provider)) {
@@ -890,6 +900,18 @@ async function runQuery(query: string): Promise<void> {
 		if (resolved) {
 			currentModel = resolved.model;
 			currentProviderName = resolved.provider;
+		}
+	}
+	// Safety: verify the model's provider has an API key — re-resolve if not
+	if (currentModel) {
+		const modelProv = (currentModel as any).provider as string | undefined;
+		if (modelProv && modelProv !== currentProviderName) {
+			// Model object's internal provider doesn't match our tracked provider — re-resolve
+			const resolved = resolveModelWithProvider(currentModelId);
+			if (resolved) {
+				currentModel = resolved.model;
+				currentProviderName = resolved.provider;
+			}
 		}
 	}
 	if (!currentModel) {

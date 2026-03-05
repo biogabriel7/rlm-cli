@@ -150,20 +150,41 @@ async function main(): Promise<void> {
 	};
 
 	// Resolve model — ensure provider has an API key
+	// Prioritise well-known providers so e.g. "gpt-4o" picks "openai" not "azure-openai-responses"
 	let model: Model<Api> | undefined;
 	let resolvedProvider = "";
 	const allModelIds: string[] = [];
+	const knownProviders = new Set(Object.keys(providerKeys));
+
+	// First pass: only well-known providers
 	for (const provider of getProviders()) {
 		const providerModels = getModels(provider);
 		for (const m of providerModels) {
 			allModelIds.push(m.id);
-			if (!model && m.id === args.modelId) {
-				const key = providerKeys[provider] || `${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`;
+			if (!model && m.id === args.modelId && knownProviders.has(provider)) {
+				const key = providerKeys[provider]!;
 				if (process.env[key]) {
 					model = m;
 					resolvedProvider = provider;
 				}
 			}
+		}
+	}
+	// Second pass: remaining providers (if not found above)
+	if (!model) {
+		for (const provider of getProviders()) {
+			if (knownProviders.has(provider)) continue;
+			for (const m of getModels(provider)) {
+				if (m.id === args.modelId) {
+					const key = `${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`;
+					if (process.env[key]) {
+						model = m;
+						resolvedProvider = provider;
+						break;
+					}
+				}
+			}
+			if (model) break;
 		}
 	}
 
