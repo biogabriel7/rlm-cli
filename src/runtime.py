@@ -22,10 +22,16 @@ import uuid
 import io
 import traceback
 import asyncio
+import threading
 
 # Real stdio handles — saved before exec() can redirect sys.stdout/sys.stderr.
 _real_stdout = sys.stdout
 _real_stdin = sys.stdin
+
+# Lock + pending results for thread-safe concurrent llm_query calls
+_io_lock = threading.Lock()
+_pending_results: dict[str, threading.Event] = {}
+_result_store: dict[str, str] = {}
 
 # Will be set by the TypeScript host before each execution
 context: str = ""
@@ -50,44 +56,58 @@ def FINAL_VAR(x):
     __final_result__ = str(x) if x is not None else None
 
 
+def _dispatch_stdin_line(line: str) -> None:
+    """Route an incoming JSON message to the correct waiting llm_query thread."""
+    try:
+        msg = json.loads(line)
+    except json.JSONDecodeError:
+        return
+    if msg.get("type") == "shutdown":
+        sys.exit(0)
+    if msg.get("type") == "llm_result":
+        rid = msg.get("id", "")
+        if rid in _pending_results:
+            _result_store[rid] = msg.get("result", "")
+            _pending_results[rid].set()
+
+
 def llm_query(sub_context: str, instruction: str = "") -> str:
     """Send a sub-context and instruction to the parent LLM and return the response.
 
-    Can be called synchronously from regular code, or used with await in async code.
-    For parallel queries, use:
-        results = await asyncio.gather(
-            async_llm_query(ctx1, instr1),
-            async_llm_query(ctx2, instr2),
-        )
+    Thread-safe: multiple concurrent calls (via async_llm_query + asyncio.gather)
+    are dispatched correctly using per-request events.
     """
-    # If called with just one arg, treat the whole thing as context+instruction combined
     if not instruction:
         instruction = ""
 
     request_id = uuid.uuid4().hex[:12]
+    event = threading.Event()
+    _pending_results[request_id] = event
+
     request = {
         "type": "llm_query",
         "sub_context": sub_context,
         "instruction": instruction,
         "id": request_id,
     }
-    _real_stdout.write(json.dumps(request) + "\n")
-    _real_stdout.flush()
+    with _io_lock:
+        _real_stdout.write(json.dumps(request) + "\n")
+        _real_stdout.flush()
 
-    # Block until the TypeScript host sends back the result
-    while True:
-        line = _real_stdin.readline()
+    # Read stdin lines and dispatch until OUR result arrives
+    while not event.is_set():
+        with _io_lock:
+            line = _real_stdin.readline()
         if not line:
+            _pending_results.pop(request_id, None)
             raise RuntimeError("REPL stdin closed unexpectedly")
         line = line.strip()
         if not line:
             continue
-        try:
-            response = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if response.get("type") == "llm_result" and response.get("id") == request_id:
-            return response.get("result", "")
+        _dispatch_stdin_line(line)
+
+    _pending_results.pop(request_id, None)
+    return _result_store.pop(request_id, "")
 
 
 async def async_llm_query(sub_context: str, instruction: str = "") -> str:

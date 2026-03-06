@@ -100,7 +100,7 @@ class Spinner {
 const DEFAULT_MODEL = process.env.RLM_MODEL || "claude-sonnet-4-6";
 const RLM_HOME = path.join(os.homedir(), ".rlm");
 const TRAJ_DIR = path.join(RLM_HOME, "trajectories");
-const W = Math.min(process.stdout.columns || 80, 100);
+let W = Math.min(process.stdout.columns || 80, 100);
 
 // ── Session state ───────────────────────────────────────────────────────────
 
@@ -259,10 +259,20 @@ async function promptForProviderKey(
 
 	process.env[providerInfo.env] = key;
 
-	// Save to ~/.rlm/credentials (persistent across sessions)
+	// Save to ~/.rlm/credentials (persistent across sessions, replaces existing key)
 	const credPath = path.join(RLM_HOME, "credentials");
 	try {
 		if (!fs.existsSync(RLM_HOME)) fs.mkdirSync(RLM_HOME, { recursive: true });
+		// Remove existing entry for this key to avoid duplicates
+		if (fs.existsSync(credPath)) {
+			const existing = fs.readFileSync(credPath, "utf-8");
+			const filtered = existing.split("\n").filter((l) => {
+				const t = l.trim();
+				if (t.startsWith("export ")) return !t.slice(7).startsWith(providerInfo.env + "=");
+				return !t.startsWith(providerInfo.env + "=");
+			}).join("\n");
+			fs.writeFileSync(credPath, filtered.endsWith("\n") ? filtered : filtered + "\n");
+		}
 		fs.appendFileSync(credPath, `${providerInfo.env}=${key}\n`);
 		// Restrict permissions (owner-only read/write)
 		try { fs.chmodSync(credPath, 0o600); } catch { /* Windows etc. */ }
@@ -530,8 +540,15 @@ function handleTrajectories(): void {
 
 // ── Display helpers ─────────────────────────────────────────────────────────
 
-const BOX_W = Math.min(process.stdout.columns || 80, 96) - 6; // panel inner width
-const MAX_CONTENT_W = BOX_W - 4; // usable chars inside │ … │
+let BOX_W = Math.min(process.stdout.columns || 80, 96) - 6; // panel inner width
+let MAX_CONTENT_W = BOX_W - 4; // usable chars inside │ … │
+
+// Update dimensions on terminal resize
+process.stdout.on("resize", () => {
+	W = Math.min(process.stdout.columns || 80, 100);
+	BOX_W = Math.min(process.stdout.columns || 80, 96) - 6;
+	MAX_CONTENT_W = BOX_W - 4;
+});
 
 /** Wrap a raw text line into chunks that fit within maxWidth. */
 function wrapText(text: string, maxWidth: number): string[] {
@@ -1071,7 +1088,7 @@ async function runQuery(query: string): Promise<void> {
 		const msg = err?.message || String(err);
 		// Suppress expected abort/shutdown errors
 		if (
-			err.name !== "AbortError" &&
+			err?.name !== "AbortError" &&
 			!msg.includes("Aborted") &&
 			!msg.includes("not running") &&
 			!msg.includes("REPL subprocess") &&

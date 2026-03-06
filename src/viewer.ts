@@ -466,7 +466,7 @@ function renderIteration(state: ViewState): void {
 	W(hline("─", c.gray) + "\n");
 	W(`  ${c.dim}esc${c.reset} back  `);
 	W(`${c.dim}up/down${c.reset} scroll  `);
-	W(`${c.dim}n/p${c.reset} next/prev  `);
+	W(`${c.dim}n/N${c.reset} next/prev`);
 	if (step.subQueries.length > 0) W(`${c.dim}s${c.reset} sub-queries  `);
 	for (const hint of hints) W(`${hint}  `);
 	W(`${c.dim}r${c.reset} result  `);
@@ -662,7 +662,7 @@ function renderSubQueryDetail(state: ViewState): void {
 
 	// Footer
 	W(hline("─", c.gray) + "\n");
-	W(`  ${c.dim}up/down${c.reset} scroll  ${c.dim}n/p${c.reset} next/prev  ${c.dim}esc${c.reset} back  ${c.dim}q${c.reset} quit\n`);
+	W(`  ${c.dim}up/down${c.reset} scroll  ${c.dim}n/N${c.reset} next/prev${c.dim}esc${c.reset} back  ${c.dim}q${c.reset} quit\n`);
 }
 
 function renderLlmInput(state: ViewState): void {

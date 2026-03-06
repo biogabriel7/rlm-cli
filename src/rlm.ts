@@ -204,16 +204,17 @@ function extractCodeFromResponse(response: AssistantMessage): string | null {
 		const fenceMatch = text.match(/```(?:python|repl)?\s*\n([\s\S]*?)```/);
 		if (fenceMatch) return fenceMatch[1].trim();
 
-		// Fallback: if the response looks like raw Python code
+		// Fallback: if the response looks like raw Python code (require Python-specific patterns)
 		const trimmed = text.trim();
 		if (
 			trimmed &&
 			!trimmed.startsWith("#") &&
-			(trimmed.includes("=") ||
-				trimmed.includes("print") ||
-				trimmed.includes("import") ||
-				trimmed.includes("for ") ||
-				trimmed.includes("def "))
+			(trimmed.includes("print(") ||
+				trimmed.includes("import ") ||
+				trimmed.includes("for ") && trimmed.includes(":") ||
+				trimmed.includes("def ") && trimmed.includes(":") ||
+				trimmed.includes("FINAL(") ||
+				trimmed.includes("llm_query("))
 		) {
 			return trimmed;
 		}
