@@ -120,8 +120,7 @@ async def async_llm_query(sub_context: str, instruction: str = "") -> str:
             async_llm_query(chunk2, "summarize"),
         )
     """
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, llm_query, sub_context, instruction)
+    return await asyncio.get_event_loop().run_in_executor(None, llm_query, sub_context, instruction)
 
 
 def _execute_code(code: str) -> None:
@@ -146,7 +145,7 @@ def _execute_code(code: str) -> None:
                 async_code = f"async def __async_exec__():\n"
                 for line in code.split("\n"):
                     async_code += f"    {line}\n"
-                async_code += "\nimport asyncio\nasyncio.get_event_loop().run_until_complete(__async_exec__())"
+                async_code += "\nimport asyncio\nasyncio.run(__async_exec__())"
                 exec(compile(async_code, "<repl>", "exec"), globals())
             else:
                 raise e

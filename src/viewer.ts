@@ -662,7 +662,7 @@ function renderSubQueryDetail(state: ViewState): void {
 
 	// Footer
 	W(hline("─", c.gray) + "\n");
-	W(`  ${c.dim}up/down${c.reset} scroll  ${c.dim}n/N${c.reset} next/prev${c.dim}esc${c.reset} back  ${c.dim}q${c.reset} quit\n`);
+	W(`  ${c.dim}up/down${c.reset} scroll  ${c.dim}n/N${c.reset} next/prev  ${c.dim}esc${c.reset} back  ${c.dim}q${c.reset} quit\n`);
 }
 
 function renderLlmInput(state: ViewState): void {
