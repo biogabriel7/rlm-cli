@@ -1003,7 +1003,24 @@ async function runQuery(query: string): Promise<void> {
 			]);
 			spinner.stop();
 
-			const answer = typeof response === "string" ? response : String(response);
+			const resp = response as any;
+			let answer: string;
+			if (resp?.stopReason === "error" || resp?.errorMessage) {
+				const errMsg = resp.errorMessage || "Unknown error";
+				// Try to extract a human-readable message from nested JSON
+				let readable = errMsg;
+				try {
+					const parsed = JSON.parse(errMsg);
+					readable = parsed?.error?.message || errMsg;
+					try { readable = JSON.parse(readable)?.error?.message || readable; } catch {}
+				} catch {}
+				throw new Error(readable);
+			}
+			if (resp?.content?.length > 0) {
+				answer = resp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
+			} else {
+				answer = String(response);
+			}
 			const totalSec = ((Date.now() - startTime) / 1000).toFixed(1);
 
 			const answerLines = answer.split("\n");
