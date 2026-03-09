@@ -25,7 +25,7 @@ process.on("unhandledRejection", (err: any) => {
 	process.exit(1);
 });
 
-const { getModels, getProviders, completeSimple } = await import("@mariozechner/pi-ai");
+const { getModels, getProviders } = await import("@mariozechner/pi-ai");
 const { PythonRepl } = await import("./repl.js");
 const { runRlmLoop } = await import("./rlm.js");
 const { loadConfig } = await import("./config.js");
@@ -355,17 +355,67 @@ function printStatusLine(): void {
 	);
 }
 
+// ── Directory tree ──────────────────────────────────────────────────────────
+
+/** Generate a concise directory tree string (like `tree -L 2`). */
+function generateDirTree(dir: string, prefix = "", depth = 0, maxDepth = 2): string {
+	if (depth > maxDepth) return "";
+	let entries: fs.Dirent[];
+	try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+	catch { return ""; }
+
+	// Filter and sort: dirs first, skip hidden/ignored
+	const filtered = entries.filter(e => {
+		if (e.name.startsWith(".") && e.name !== ".env") return false;
+		if (e.isDirectory() && SKIP_DIRS.has(e.name)) return false;
+		if (e.isSymbolicLink()) return false;
+		if (e.isFile() && isBinaryFile(path.join(dir, e.name))) return false;
+		return true;
+	}).sort((a, b) => {
+		if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+		return a.name.localeCompare(b.name);
+	});
+
+	// Cap entries per level to keep it concise
+	const MAX_PER_LEVEL = 25;
+	const shown = filtered.slice(0, MAX_PER_LEVEL);
+	const omitted = filtered.length - shown.length;
+	const lines: string[] = [];
+
+	for (let i = 0; i < shown.length; i++) {
+		const entry = shown[i];
+		const isLast = i === shown.length - 1 && omitted === 0;
+		const connector = isLast ? "└── " : "├── ";
+		const childPrefix = isLast ? "    " : "│   ";
+		const suffix = entry.isDirectory() ? "/" : "";
+		lines.push(`${prefix}${connector}${entry.name}${suffix}`);
+		if (entry.isDirectory()) {
+			const sub = generateDirTree(path.join(dir, entry.name), prefix + childPrefix, depth + 1, maxDepth);
+			if (sub) lines.push(sub);
+		}
+	}
+	if (omitted > 0) lines.push(`${prefix}└── ... ${omitted} more`);
+	return lines.join("\n");
+}
+
+/** Build a cwd context string with directory tree. */
+function buildCwdContext(): string {
+	const cwd = process.cwd();
+	const tree = generateDirTree(cwd);
+	const parts = [`Working directory: ${cwd}\n`];
+	if (tree) parts.push(`File tree:\n${tree}`);
+	return parts.join("\n");
+}
+
 // ── Welcome ─────────────────────────────────────────────────────────────────
 
 function printWelcome(): void {
 	console.clear();
 	printBanner();
-
+	const cwdShort = process.cwd().replace(os.homedir(), "~");
+	console.log(`  ${c.dim}${cwdShort}${c.reset}`);
 	printStatusLine();
-	console.log(`  ${c.dim}max ${config.max_iterations} iterations · depth ${config.max_depth} · ${config.max_sub_queries} sub-queries${c.reset}`);
-	console.log();
-	console.log(`  ${c.dim}/help for commands${c.reset}`);
-	console.log();
+	console.log(`  ${c.dim}max ${config.max_iterations} iters · depth ${config.max_depth} · ${config.max_sub_queries} sub-queries · /help${c.reset}\n`);
 }
 
 // ── Help ────────────────────────────────────────────────────────────────────
@@ -414,14 +464,43 @@ ${c.bold}Tips${c.reset}
 
 // ── Slash command handlers ──────────────────────────────────────────────────
 
-async function handleFile(arg: string): Promise<void> {
+/** Check if a token looks like a file path (vs. plain query text). */
+function looksLikePath(token: string): boolean {
+	if (token.includes("/") || token.includes("\\")) return true;
+	if (token.includes("*") || token.includes("?")) return true;
+	if (token.startsWith("~")) return true;
+	if (token.startsWith(".")) return true;
+	if (/\.\w{1,6}$/.test(token)) return true; // has file extension
+	return false;
+}
+
+async function handleFile(arg: string): Promise<string | void> {
 	if (!arg) {
-		console.log(`  ${c.red}Usage: /file <path|dir|glob> [...]${c.reset}`);
+		console.log(`  ${c.red}Usage: /file <path> [query]${c.reset}`);
 		console.log(`  ${c.dim}Examples: /file src/main.ts  |  /file src/  |  /file src/**/*.ts${c.reset}`);
 		return;
 	}
-	const args = arg.split(/\s+/).filter(Boolean);
-	const filePaths = resolveFileArgs(args);
+	const tokens = arg.split(/\s+/).filter(Boolean);
+
+	// Separate paths from query text
+	const pathTokens: string[] = [];
+	const queryTokens: string[] = [];
+	let pastPaths = false;
+	for (const t of tokens) {
+		if (!pastPaths && looksLikePath(t)) {
+			pathTokens.push(t);
+		} else {
+			pastPaths = true;
+			queryTokens.push(t);
+		}
+	}
+
+	if (pathTokens.length === 0) {
+		console.log(`  ${c.red}No file path found in: ${arg}${c.reset}`);
+		return;
+	}
+
+	const filePaths = resolveFileArgs(pathTokens);
 
 	if (filePaths.length === 0) {
 		console.log(`  ${c.red}No files found.${c.reset}`);
@@ -454,6 +533,9 @@ async function handleFile(arg: string): Promise<void> {
 			console.log(`    ${c.dim}... and ${filePaths.length - 20} more${c.reset}`);
 		}
 	}
+
+	// Return query text if provided after paths
+	if (queryTokens.length > 0) return queryTokens.join(" ");
 }
 
 async function handleUrl(arg: string): Promise<void> {
@@ -557,15 +639,20 @@ function handleTrajectories(): void {
 
 // ── Display helpers ─────────────────────────────────────────────────────────
 
-let BOX_W = Math.min(process.stdout.columns || 80, 96) - 6; // panel inner width
-let MAX_CONTENT_W = BOX_W - 4; // usable chars inside │ … │
+let BOX_W = Math.min(process.stdout.columns || 80, 96) - 4;
+let MAX_CONTENT_W = BOX_W - 4;
 
 // Update dimensions on terminal resize
 process.stdout.on("resize", () => {
 	W = Math.min(process.stdout.columns || 80, 100);
-	BOX_W = Math.min(process.stdout.columns || 80, 96) - 6;
+	BOX_W = Math.min(process.stdout.columns || 80, 96) - 4;
 	MAX_CONTENT_W = BOX_W - 4;
 });
+
+/** Strip ANSI escape codes to get visible string length. */
+function stripAnsi(str: string): string {
+	return str.replace(/\x1b\[[0-9;]*m/g, "");
+}
 
 /** Wrap a raw text line into chunks that fit within maxWidth. */
 function wrapText(text: string, maxWidth: number): string[] {
@@ -577,56 +664,81 @@ function wrapText(text: string, maxWidth: number): string[] {
 	return result;
 }
 
-function hrule(label?: string, color: string = c.dim): string {
-	const w = BOX_W - 2;
-	if (!label) return `    ${color}${"─".repeat(w)}${c.reset}`;
-	const right = Math.max(0, w - label.length - 3);
-	return `    ${color}── ${c.reset}${label}${color} ${"─".repeat(right)}${c.reset}`;
+// ── Box-drawing helpers ─────────────────────────────────────────────────────
+
+function boxTop(label: string, color: string = c.dim): string {
+	const visLen = stripAnsi(label).length;
+	const right = Math.max(0, BOX_W - visLen - 5);
+	return `    ${color}╭─ ${c.reset}${label}${color} ${"─".repeat(right)}╮${c.reset}`;
 }
 
-function borderLine(text: string, color: string = c.dim): string {
+function boxLine(text: string, color: string = c.dim): string {
 	return `    ${color}│${c.reset} ${text}`;
 }
+
+function boxBottom(color: string = c.dim): string {
+	return `    ${color}╰${"─".repeat(BOX_W - 2)}╯${c.reset}`;
+}
+
+function stepRule(): void {
+	console.log(`    ${c.dim}${"─".repeat(BOX_W - 2)}${c.reset}`);
+}
+
+// ── Display functions ───────────────────────────────────────────────────────
 
 function displayCode(code: string): void {
 	const lines = code.split("\n");
 	const lineNumWidth = String(lines.length).length;
 	const codeMaxW = MAX_CONTENT_W - lineNumWidth - 1;
 
-	console.log(hrule("Code"));
+	console.log(boxTop("Code", c.cyan));
 	for (let i = 0; i < lines.length; i++) {
 		const wrapped = wrapText(lines[i], codeMaxW);
 		for (let j = 0; j < wrapped.length; j++) {
 			const prefix = j === 0
 				? `${c.dim}${String(i + 1).padStart(lineNumWidth)}${c.reset}`
 				: " ".repeat(lineNumWidth);
-			console.log(borderLine(`${prefix} ${c.cyan}${wrapped[j]}${c.reset}`));
+			console.log(boxLine(`${prefix} ${c.cyan}${wrapped[j]}${c.reset}`, c.cyan));
 		}
 	}
-	console.log(hrule());
+	console.log(boxBottom(c.cyan));
 }
 
 function displayOutput(output: string): void {
 	const lines = output.split("\n").filter(l => l.trim() !== "");
+	if (lines.length === 0) return;
 
-	console.log(hrule("Output"));
+	console.log(boxTop("Output", c.green));
 	for (const line of lines) {
 		for (const chunk of wrapText(line, MAX_CONTENT_W)) {
-			console.log(borderLine(`${c.green}${chunk}${c.reset}`));
+			console.log(boxLine(`${c.green}${chunk}${c.reset}`, c.green));
 		}
 	}
-	console.log(hrule());
+	console.log(boxBottom(c.green));
 }
 
 function displayError(stderr: string): void {
 	const lines = stderr.split("\n").filter(l => l.trim() !== "");
-	console.log(hrule(`${c.red}Error${c.reset}`));
+	if (lines.length === 0) return;
+
+	console.log(boxTop("Error", c.red));
 	for (const line of lines) {
 		for (const chunk of wrapText(line, MAX_CONTENT_W)) {
-			console.log(borderLine(`${c.red}${chunk}${c.reset}`, c.red));
+			console.log(boxLine(`${c.red}${chunk}${c.reset}`, c.red));
 		}
 	}
-	console.log(hrule());
+	console.log(boxBottom(c.red));
+}
+
+function showErrorMsg(msg: string): void {
+	const lines = msg.split(/\n/).filter(l => l.trim());
+	console.log(boxTop("Error", c.red));
+	for (const line of lines) {
+		for (const chunk of wrapText(line, MAX_CONTENT_W)) {
+			console.log(boxLine(chunk, c.red));
+		}
+	}
+	console.log(boxBottom(c.red));
 }
 
 function formatSize(chars: number): string {
@@ -634,12 +746,12 @@ function formatSize(chars: number): string {
 }
 
 function displaySubQueryStart(info: SubQueryStartInfo): void {
-	console.log(hrule(`${c.magenta}Sub-query #${info.index}${c.reset}  ${c.dim}${formatSize(info.contextLength)} chars`));
+	console.log(boxTop(`${c.magenta}Sub-query #${info.index}${c.reset}  ${c.dim}${formatSize(info.contextLength)} chars`, c.magenta));
 
 	const instrLines = info.instruction.split("\n").filter(l => l.trim());
 	for (const line of instrLines) {
 		for (const chunk of wrapText(line, MAX_CONTENT_W)) {
-			console.log(borderLine(`${c.dim}${chunk}${c.reset}`, c.magenta));
+			console.log(boxLine(`${c.dim}${chunk}${c.reset}`, c.magenta));
 		}
 	}
 }
@@ -648,14 +760,15 @@ function displaySubQueryResult(info: SubQueryInfo): void {
 	const elapsed = (info.elapsedMs / 1000).toFixed(1);
 	const resultLines = info.resultPreview.split("\n");
 
-	console.log(borderLine("", c.magenta));
-	console.log(borderLine(`${c.green}Response:${c.reset}`, c.magenta));
+	console.log(boxLine("", c.magenta));
+	console.log(boxLine(`${c.green}Response:${c.reset}`, c.magenta));
 	for (const line of resultLines) {
 		for (const chunk of wrapText(line, MAX_CONTENT_W)) {
-			console.log(borderLine(`${c.green}${chunk}${c.reset}`, c.magenta));
+			console.log(boxLine(`${c.green}${chunk}${c.reset}`, c.magenta));
 		}
 	}
-	console.log(hrule(`${c.dim}${elapsed}s · ${formatSize(info.resultLength)} received`));
+	console.log(boxBottom(c.magenta));
+	console.log(`    ${c.dim}${elapsed}s · ${formatSize(info.resultLength)} received${c.reset}`);
 }
 
 // ── Available models list ────────────────────────────────────────────────────
@@ -848,9 +961,17 @@ function simpleGlobMatch(pattern: string, filePath: string, _braceDepth = 0): bo
 	return new RegExp(regex).test(filePath);
 }
 
+/** Expand ~ to home directory (shell doesn't do this for us). */
+function expandTilde(p: string): string {
+	if (p === "~") return os.homedir();
+	if (p.startsWith("~/") || p.startsWith("~\\")) return path.join(os.homedir(), p.slice(2));
+	return p;
+}
+
 function resolveFileArgs(args: string[]): string[] {
 	const files: string[] = [];
-	for (const arg of args) {
+	for (const rawArg of args) {
+		const arg = expandTilde(rawArg);
 		const resolved = path.resolve(arg);
 
 		// Glob pattern (contains * or ?)
@@ -915,7 +1036,6 @@ function loadMultipleFiles(filePaths: string[]): { text: string; count: number; 
 
 async function runQuery(query: string): Promise<void> {
 	const effectiveContext = contextText || query;
-	const isDirectMode = !contextText;
 
 	if (!currentModel) {
 		const resolved = resolveModelWithProvider(currentModelId);
@@ -946,73 +1066,9 @@ async function runQuery(query: string): Promise<void> {
 	const startTime = Date.now();
 	const spinner = new Spinner();
 
-	// ── Direct LLM mode (no context loaded) ──────────────────────────────
-	if (isDirectMode) {
-		console.log(`\n  ${c.dim}${currentModelId}${c.reset} · ${c.dim}llm${c.reset}\n`);
-		const ac = new AbortController();
-		activeAc = ac;
-		activeSpinner = spinner;
-
-		try {
-			spinner.start("Thinking");
-			const response = await Promise.race([
-				completeSimple(currentModel, {
-					systemPrompt: "You are a helpful assistant. Be concise but thorough.",
-					messages: [{ role: "user" as const, content: query, timestamp: Date.now() }],
-				}),
-				new Promise<never>((_, reject) => {
-					ac.signal.addEventListener("abort", () => reject(new Error("Aborted")));
-				}),
-			]);
-			spinner.stop();
-
-			const resp = response as any;
-			let answer: string;
-			if (resp?.stopReason === "error" || resp?.errorMessage) {
-				const errMsg = resp.errorMessage || "Unknown error";
-				// Try to extract a human-readable message from nested JSON
-				let readable = errMsg;
-				try {
-					const parsed = JSON.parse(errMsg);
-					readable = parsed?.error?.message || errMsg;
-					try { readable = JSON.parse(readable)?.error?.message || readable; } catch {}
-				} catch {}
-				throw new Error(readable);
-			}
-			if (resp?.content?.length > 0) {
-				answer = resp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
-			} else {
-				answer = String(response);
-			}
-			const totalSec = ((Date.now() - startTime) / 1000).toFixed(1);
-
-			const answerLines = answer.split("\n");
-			console.log(hrule(`${c.green}✔ Response${c.reset}  ${c.dim}${totalSec}s`));
-			for (const line of answerLines) {
-				for (const chunk of wrapText(line, MAX_CONTENT_W)) {
-					console.log(borderLine(chunk, c.green));
-				}
-			}
-			console.log(hrule());
-			console.log();
-		} catch (err: any) {
-			spinner.stop();
-			const msg = err?.message || String(err);
-			if (err?.name !== "AbortError" && !msg.includes("Aborted")) {
-				console.log(`\n  ${c.red}Error: ${msg}${c.reset}\n`);
-			}
-		} finally {
-			spinner.stop();
-			activeAc = null;
-			activeSpinner = null;
-			isRunning = false;
-		}
-		return;
-	}
-
-	// ── RLM mode (context loaded) ────────────────────────────────────────
+	// ── RLM mode ─────────────────────────────────────────────────────────
 	let subQueryCount = 0;
-	console.log(`\n  ${c.dim}${currentModelId}${c.reset} · ${c.dim}${(effectiveContext.length / 1024).toFixed(1)}KB context${c.reset}\n`);
+	console.log(`\n  ${c.dim}${currentModelId} · ${(effectiveContext.length / 1024).toFixed(1)}KB context${c.reset}`);
 
 	// Trajectory bookkeeping
 	const trajectory: any = {
@@ -1063,7 +1119,8 @@ async function runQuery(query: string): Promise<void> {
 					};
 
 					const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-					console.log(hrule(`${c.bold}Step ${info.iteration}${c.reset}${c.dim}/${info.maxIterations}  ${elapsed}s`));
+					console.log(`\n  ${c.bold}Step ${info.iteration}${c.reset}${c.dim}/${info.maxIterations}  ${elapsed}s elapsed${c.reset}`);
+					stepRule();
 					spinner.start("Generating code");
 				}
 
@@ -1099,8 +1156,7 @@ async function runQuery(query: string): Promise<void> {
 
 					const iterElapsed = ((Date.now() - iterStart) / 1000).toFixed(1);
 					const sqLabel = info.subQueries > 0 ? ` · ${info.subQueries} sub-queries` : "";
-					console.log(`    ${c.dim}${iterElapsed}s${sqLabel}${c.reset}`);
-					console.log();
+					console.log(`\n    ${c.dim}${iterElapsed}s${sqLabel}${c.reset}`);
 				}
 			},
 			onSubQueryStart: (info: SubQueryStartInfo) => {
@@ -1132,13 +1188,14 @@ async function runQuery(query: string): Promise<void> {
 		const stats = `${result.iterations} step${result.iterations !== 1 ? "s" : ""} · ${result.totalSubQueries} sub-quer${result.totalSubQueries !== 1 ? "ies" : "y"} · ${totalSec}s`;
 
 		const answerLines = result.answer.split("\n");
-		console.log(hrule(`${c.green}✔ Result${c.reset}  ${c.dim}${stats}`));
+		console.log();
+		console.log(boxTop(`${c.green}✔ Result${c.reset}  ${c.dim}${stats}`, c.green));
 		for (const line of answerLines) {
 			for (const chunk of wrapText(line, MAX_CONTENT_W)) {
-				console.log(borderLine(chunk, c.green));
+				console.log(boxLine(chunk, c.green));
 			}
 		}
-		console.log(hrule());
+		console.log(boxBottom(c.green));
 		console.log();
 
 		// Save trajectory
@@ -1162,7 +1219,7 @@ async function runQuery(query: string): Promise<void> {
 			!msg.includes("REPL subprocess") &&
 			!msg.includes("REPL shut down")
 		) {
-			console.log(`\n  ${c.red}Error: ${msg}${c.reset}\n`);
+			showErrorMsg(msg);
 		}
 	} finally {
 		spinner.stop();
@@ -1179,7 +1236,7 @@ async function runQuery(query: string): Promise<void> {
 function extractFilePath(input: string): { filePath: string | null; query: string } {
 	const atMatch = input.match(/@(\S+)/);
 	if (atMatch) {
-		const filePath = path.resolve(atMatch[1]);
+		const filePath = path.resolve(expandTilde(atMatch[1]));
 		if (fs.existsSync(filePath)) {
 			const query = input.replace(atMatch[0], "").trim();
 			return { filePath, query };
@@ -1216,7 +1273,7 @@ function expandAtFiles(input: string): string {
 
 	for (const part of input.split(/\s+/)) {
 		if (part.startsWith("@") && part.length > 1) {
-			tokens.push(part.slice(1));
+			tokens.push(expandTilde(part.slice(1)));
 		} else {
 			remaining.push(part);
 		}
@@ -1372,6 +1429,10 @@ async function interactive(): Promise<void> {
 		process.exit(1);
 	}
 
+	// Auto-load cwd context so the LLM knows the project structure
+	contextText = buildCwdContext();
+	contextSource = path.basename(process.cwd());
+
 	printWelcome();
 
 	const rl = readline.createInterface({
@@ -1443,9 +1504,14 @@ async function interactive(): Promise<void> {
 					printCommandHelp();
 					break;
 				case "file":
-				case "f":
-					await handleFile(arg);
+				case "f": {
+					const fileQuery = await handleFile(arg);
+					if (fileQuery && contextText) {
+						await runQuery(fileQuery);
+						printStatusLine();
+					}
 					break;
+				}
 				case "url":
 				case "u":
 					await handleUrl(arg);
@@ -1573,9 +1639,7 @@ async function interactive(): Promise<void> {
 						currentModel = provResolved?.model;
 						currentProviderName = provResolved?.provider || chosen.piProvider;
 						saveModelPreference(currentModelId);
-						console.log(`  ${c.green}✓${c.reset} Switched to ${c.bold}${chosen.name}${c.reset}`);
-						console.log(`  ${c.green}✓${c.reset} Default model: ${c.bold}${currentModelId}${c.reset}`);
-						console.log();
+						console.log(`  ${c.green}✓${c.reset} ${chosen.name} · ${c.bold}${currentModelId}${c.reset}`);
 						printStatusLine();
 					} else {
 						console.log(`  ${c.red}No models available for ${chosen.name}.${c.reset}`);
@@ -1684,32 +1748,53 @@ async function interactive(): Promise<void> {
 			}
 		}
 
-		// Auto-detect file paths
+		// Auto-detect bare file/directory paths (tilde, absolute, relative)
 		if (!contextText) {
-			const { filePath, query: extractedQuery } = extractFilePath(query);
-			if (filePath) {
-				try {
-					contextText = fs.readFileSync(filePath, "utf-8");
-					contextSource = path.basename(filePath);
-					const lines = contextText.split("\n").length;
-					console.log(
-						`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines} lines) from ${c.underline}${filePath}${c.reset}`
-					);
-					query = extractedQuery || query;
-				} catch (err: any) {
-					console.log(`  ${c.red}Could not read file: ${err.message}${c.reset}`);
+			const tokens = query.split(/\s+/);
+			const pathTokens: string[] = [];
+			for (const t of tokens) {
+				if (looksLikePath(t)) pathTokens.push(t);
+				else break;
+			}
+			if (pathTokens.length > 0) {
+				const existing = pathTokens.filter((t) => {
+					const p = path.resolve(expandTilde(t));
+					return fs.existsSync(p);
+				});
+				if (existing.length > 0) {
+					const filePaths = resolveFileArgs(existing);
+					if (filePaths.length === 1) {
+						try {
+							contextText = fs.readFileSync(filePaths[0], "utf-8");
+							contextSource = path.relative(process.cwd(), filePaths[0]) || filePaths[0];
+							const lines = contextText.split("\n").length;
+							console.log(
+								`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines} lines) from ${c.underline}${contextSource}${c.reset}`
+							);
+						} catch (err: any) {
+							console.log(`  ${c.red}Could not read file: ${err.message}${c.reset}`);
+						}
+					} else if (filePaths.length > 1) {
+						const { text, count, totalBytes } = loadMultipleFiles(filePaths);
+						contextText = text;
+						contextSource = `${count} files`;
+						console.log(
+							`  ${c.green}✓${c.reset} Loaded ${c.bold}${count}${c.reset} files (${(totalBytes / 1024).toFixed(1)}KB total)`
+						);
+					}
+					if (contextText) {
+						query = tokens.slice(pathTokens.length).join(" ") || query;
+					}
 				}
 			}
 		}
 
 		// Run query
 		await runQuery(query);
-
 		printStatusLine();
-		console.log();
 		rl.prompt();
 	  } catch (err: any) {
-		console.log(`\n  ${c.red}Error: ${err?.message || err}${c.reset}\n`);
+		showErrorMsg(String(err?.message || err));
 		rl.prompt();
 	  }
 	});
@@ -1719,7 +1804,7 @@ async function interactive(): Promise<void> {
 	rl.on("SIGINT", () => {
 		if (isRunning && activeAc) {
 			activeSpinner?.stop();
-			console.log(`\n  ${c.red}Stopped${c.reset}\n`);
+			console.log(`\n  ${c.red}Stopped${c.reset}`);
 			activeAc.abort();
 			try { activeRepl?.shutdown(); } catch { /* ok */ }
 			isRunning = false;
